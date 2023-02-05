@@ -211,7 +211,7 @@ class FT245R:
                 """
                 if portname:
                         # the value is a mask if the portname is defined
-                        portid = self.alias.get(portname, portname)
+                        portid = self.aliases.index(str(portname))
                         mask = 0x1 << (portid)
                         value = self.relay_state|(mask) if value else self.relay_state&~(mask)
 
@@ -221,7 +221,6 @@ class FT245R:
                         
                 # Write status
                 ret = self.dev.write(0x02, value.to_bytes(1, 'little'), 500)
-                print(ret)
                 if ret < 0:
                         raise RuntimeError("relayctl: failure to write status")
 
@@ -313,7 +312,7 @@ def main(args):
         parser_get.set_defaults(func=do_get)
 
         parser_toggle = subparsers.add_parser('toggle', help='toggle the relay value')
-        parser_toggle.add_argument('-s', '--seconds', help='the delay between the toggle', type=float, default='5')
+        parser_toggle.add_argument('-s', '--seconds', help='the delay between the toggle', type=float, default=0.5)
         parser_toggle.add_argument('gpio', nargs='?', type=str, default=None, help='the gpio')
         parser_toggle.set_defaults(func=do_toggle)  
 
