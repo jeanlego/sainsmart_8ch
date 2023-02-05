@@ -74,7 +74,8 @@ import platform
 import sys
 import time
 import argparse
-from array import array
+import os
+import json
 
 class FT245R:
         def _list_dev(self):
@@ -132,38 +133,57 @@ class FT245R:
                 ret = self.dev.ctrl_transfer(0x40, 0x0b, 0x01ff, 0x01, None, 500)
                 if ret < 0:
                         raise RuntimeError("relayctl: failure to enable bitbang mode")
+                
                 self.is_connected = True
-                self.relay_state, _ = self.getstate()
-                        
-        def __init__(self):
+                self.relay_state, _ = self.get()
+
+    
+        def __init__(self, size=8, config_path=None):
                 self.VID = 0x0403                   # USB Vendor ID of FT245R and FT232
                 self.PID = 0x6001                   # USB Product ID of FT245R and FT232
                 self.PROD_STR = u'FT245R USB FIFO'  # differentiate from FT232 USB UART
                 self.is_connected = False
                 self.dev = None
-                self.RELAY_MIN = 1
-                self.RELAY_MAX = 8
+                self.size = size
                 self.relay_state = 0                # 8 bits representing 8 relays
 
                 dev_list = self._list_dev()
-                # list of FT245R devices are returned
                 if len(dev_list) != 1:
                         raise RuntimeError("relayctl: Unable to detect only one FT245R device")
 
                 self.dev = dev_list[0]
-                self._disconnect()
+                
+                self.config_path = config_path
+                if self.config_path is not None and os.path.isfile(self.config_path):
+                        with open(self.config_path, 'r') as config_file:
+                                self.config = json.load(config_file)
+                else:
+                        self.config = {}
+                
+                self.serial = usb.util.get_string(self.dev, self.dev.iSerialNumber)
+                # { "id": "alias" }
+                aliases = self.config.get(self.serial, {}).get('aliases',{})
+                self.aliases = []
+                for i in range(0, self.size):
+                        i = str(i)
+                        if i in aliases:
+                                self.aliases.append(aliases[i])
+                        else:
+                                self.aliases.append(i)
+
                 self._connect()
+
 
         def __del__(self):
                 self._disconnect()
-                
-        def getstate(self):
+
+
+        def get(self, portname=None):
                 """
                 Gets a byte which represents the status of all 8 relays.
 
                 @return: status
                 """
-
                 # Check for errors
                 if not self.is_connected:
                         raise IOError('Must connect to device first')
@@ -175,19 +195,25 @@ class FT245R:
                         raise RuntimeError("relayctl: failure to read status")
         
                 self.relay_state = buf[0]
-                relay_states = []
-                i = 0
-                while i < 8:
-                        relay_states.append(bool(self.relay_state & (1 << i)))
-                        i += 1
+                if portname:
+                        portid = self.aliases.index(str(portname))
+                        value = bool(self.relay_state & (1 << portid))
+                        return value, [ {'id': portid, 'alias': self.aliases[portid], 'value': value } ]
+                else:
+                        return self.relay_state, [ {'id': i, 'alias': self.aliases[i], 'value': bool(self.relay_state & (1 << i)) } for i in range(0,self.size) ]
 
-                return self.relay_state, relay_states
 
-
-        def setstate(self, value):
+        def set(self, value, portname=None):
                 """
-                Sets all relays to the state in FT245R.relay_state.
+                Switches relay relay_num off.
+
+                @param relay_num: which relay
                 """
+                if portname:
+                        # the value is a mask if the portname is defined
+                        portid = self.alias.get(portname, portname)
+                        mask = 0x1 << (portid)
+                        value = self.relay_state|(mask) if value else self.relay_state&~(mask)
 
                 # Check for errors
                 if not self.is_connected:
@@ -200,50 +226,61 @@ class FT245R:
                         raise RuntimeError("relayctl: failure to write status")
 
                 self.relay_state = value
-                return
 
 
-        def set(self, relay_num, value):
-                """
-                Switches relay relay_num off.
+        def dumpstate(self, portname=None):
+                _, states = self.get(portname=portname)
+                to_print = []
+                maxlen = 0
+                for i in states:
+                        name = f"D{i['id']}"
+                        if str(i['id']) != i['alias']:
+                                name += f" ({i['alias']})"
+                        name +=  ":"
+                        maxlen = max(maxlen, len(name))
+                        to_print.append([name, f"{'ON' if i['value'] else 'OFF'}"])        
+                        
+                for ln in to_print:
+                        print(f'{ln[0] : <{maxlen+1}}{ln[1]}')
 
-                @param relay_num: which relay
-                """
-                mask = 0x1 << (relay_num)
-                self.setstate(self.relay_state|(mask) if value else self.relay_state&~(mask))
+        def set_config(self, keys, value):
+                d = self.config
+                keys = [self.serial] + keys
+                for key in keys[:-1]:
+                        if key in d:
+                                d = d[key]
+                        else:
+                                d = d.setdefault(key, {})
+                d[keys[-1]] = value
+        
+        def write_config(self):
+                with open(self.config_path, 'w+') as config_file:
+                        json.dump(self.config, config_file, indent=2)       
 
 
- 
 def do_set(rb, args):
         if args.gpio is None:
-                rb.setstate(0xFF if args.value else 0x00)
-        else:
-                rb.set(args.gpio, args.value)
+                args.value = 0xFF if args.value else 0x00
         
+        rb.set(args.value, portname=args.gpio)
+        
+
 def do_get(rb, args):
-        _, state = rb.getstate()
-        if args.gpio is None:
-                i = 0
-                for relay in state:
-                        print(f'{i}: {"ON" if relay else "OFF"}')
-                        i += 1
-        else:
-                print(f'{args.gpio}: {"ON" if state[args.gpio] else "OFF"}')
+        rb.dumpstate(portname=args.gpio)
+
 
 def do_toggle(rb, args):
-        byte, state = rb.getstate()
-        if args.gpio is None:
-                rb.setstate(~byte)
-        else:
-                rb.set(args.gpio, not state[args.gpio])
-                
+        value, _ = rb.get(portname=args.gpio)
+        inverse = ~value if args.gpio is None else not value
+        rb.set(inverse, portname=args.gpio)
         time.sleep(args.seconds)
-
-        if args.gpio is None:
-                rb.setstate(byte)
-        else:
-                rb.set(args.gpio, state[args.gpio])
+        rb.set(value, portname=args.gpio)
  
+ 
+def do_config(rb, args):
+        rb.set_config(args.key.split('.'), args.value)
+        rb.write_config()
+
 
 def str2bool(v):
         if isinstance(v, bool):
@@ -255,22 +292,29 @@ def str2bool(v):
         else:
                 raise argparse.ArgumentTypeError('Boolean value expected.')
 
+
 def main(args):
         parser = argparse.ArgumentParser(prog = 'relay',description = 'toggle relay')
+        parser.add_argument('--config', '-c', default="~/.relayrc", type=str, help='the config path')
         subparsers = parser.add_subparsers()
-
+        
+        parser_config = subparsers.add_parser('config', help='set config values')
+        parser_config.add_argument('key', type=str, help='the config key')
+        parser_config.add_argument('value', type=str, help='the config value')
+        parser_config.set_defaults(func=do_config)
+        
         parser_set = subparsers.add_parser('set', help='set a relay value')
-        parser_set.add_argument('gpio', choices=range(0,8), nargs='?', type=int, default=None, help='the gpio')
+        parser_set.add_argument('gpio', nargs='?', type=str, default=None, help='the gpio')
         parser_set.add_argument('value', type=str2bool, help='the value')
         parser_set.set_defaults(func=do_set)
 
         parser_get = subparsers.add_parser('get', help='get a relay value')
-        parser_get.add_argument('gpio', choices=range(0,8), nargs='?', type=int, default=None, help='the gpio') 
+        parser_get.add_argument('gpio', nargs='?', type=str, default=None, help='the gpio') 
         parser_get.set_defaults(func=do_get)
 
         parser_toggle = subparsers.add_parser('toggle', help='toggle the relay value')
         parser_toggle.add_argument('-s', '--seconds', help='the delay between the toggle', type=float, default='5')
-        parser_toggle.add_argument('gpio', choices=range(0,8), nargs='?', type=int, default=None, help='the gpio')
+        parser_toggle.add_argument('gpio', nargs='?', type=str, default=None, help='the gpio')
         parser_toggle.set_defaults(func=do_toggle)  
 
 
@@ -279,8 +323,8 @@ def main(args):
                 
         options = parser.parse_args(args=args)
         ec = 0
-        if hasattr(options, 'func'):
-                ec = options.func(FT245R(), options)
+        if hasattr(options, 'func'):   
+                ec = options.func(FT245R(config_path=os.path.realpath(os.path.expanduser(options.config))), options)
         return ec
 
 if __name__ == "__main__":
