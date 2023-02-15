@@ -178,6 +178,23 @@ class FT245R:
                 self._disconnect()
 
 
+        def _get_port_id(self, value):
+                """
+                @return the port id from a name or id
+                """
+                if isinstance(value, int):
+                        return value
+                elif value.isdigit():
+                        value = int(value)
+                        if value >= 0 and value < 8:
+                                return value
+
+                if value in self.aliases:
+                        return self.aliases.index(str(value))
+
+                raise RuntimeError(f"relayctl: Invalid name or port id {value}")
+
+
         def get(self, portname=None):
                 """
                 Gets a byte which represents the status of all 8 relays.
@@ -196,7 +213,7 @@ class FT245R:
         
                 self.relay_state = buf[0]
                 if portname:
-                        portid = self.aliases.index(str(portname))
+                        portid = self._get_port_id(portname)
                         value = bool(self.relay_state & (1 << portid))
                         return value, [ {'id': portid, 'alias': self.aliases[portid], 'value': value } ]
                 else:
@@ -211,7 +228,7 @@ class FT245R:
                 """
                 if portname:
                         # the value is a mask if the portname is defined
-                        portid = self.aliases.index(str(portname))
+                        portid = self._get_port_id(portname)
                         mask = 0x1 << (portid)
                         value = self.relay_state|(mask) if value else self.relay_state&~(mask)
 
