@@ -98,7 +98,7 @@ class FT245R:
                 self.is_connected = False
                 usb.util.release_interface(self.dev, 0)
                 usb.util.dispose_resources(self.dev)
-                if platform.system() != 'Windows':
+                if platform.system() == 'Linux':
                         try:
                                 if not self.dev.is_kernel_driver_active(0):
                                         self.dev.attach_kernel_driver(0)
